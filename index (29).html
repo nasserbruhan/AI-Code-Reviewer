@@ -1,0 +1,178 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Code Reviewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div id="root"></div>
+  <script type="text/babel">
+    function App() {
+      const [repoOwner, setRepoOwner] = React.useState('');
+      const [repoName, setRepoName] = React.useState('');
+      const [prNumber, setPrNumber] = React.useState('');
+      const [githubToken, setGithubToken] = React.useState('');
+      const [llmApiKey, setLlmApiKey] = React.useState('');
+      const [review, setReview] = React.useState('');
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+
+      const handleReview = async () => {
+        setLoading(true);
+        setError('');
+        setReview('');
+
+        // Fetch PR diff from GitHub
+        try {
+          const diffResponse = await fetch(
+            `https://api.github.com/repos/${repoOwner}/${repoName}/pulls/${prNumber}`,
+            {
+              headers: {
+                'Authorization': `token ${githubToken}`,
+                'Accept': 'application/vnd.github.v3.diff'
+              }
+            }
+          );
+          if (!diffResponse.ok) throw new Error('Failed to fetch PR diff');
+          const diff = await diffResponse.text();
+
+          // Send to LLM (xAI or OpenAI-compatible endpoint)
+          const prompt = `
+            You are an expert code reviewer. Review this code diff:
+            ${diff}
+
+            Provide:
+            1. Overall review: Bugs, style issues, security vulnerabilities.
+            2. Optimized code patterns: Suggest refactors for efficiency, readability, or best practices.
+            3. Auto-generated tests: Write unit tests for the changed code (assume language from diff, e.g., Python pytest).
+          `;
+          const llmResponse = await fetch('https://api.x.ai/v1/chat/completions', { // Update with xAI's endpoint if different
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${llmApiKey}`
+            },
+            body: JSON.stringify({
+              model: 'grok-4', // Use xAI's model; fallback to 'gpt-4o' for OpenAI
+              messages: [{ role: 'user', content: prompt }],
+              max_tokens: 2000
+            })
+          });
+          if (!llmResponse.ok) throw new Error('LLM API request failed');
+          const llmData = await llmResponse.json();
+          setReview(llmData.choices[0].message.content);
+        } catch (err) {
+          setError(err.message);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      return (
+        <div className="max-w-3xl w-full mx-auto p-6 bg-white shadow-lg rounded-lg">
+          <h1 className="text-3xl font-bold text-gray-800 mb-6">AI Code Reviewer</h1>
+          <div className="space-y-4">
+            <input
+              type="text"
+              placeholder="GitHub Username (e.g., octocat)"
+              value={repoOwner}
+              onChange={(e) => setRepoOwner(e.target.value)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="text"
+              placeholder="Repository Name (e.g., hello-world)"
+              value={repoName}
+              onChange={(e) => setRepoName(e.target.value)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="text"
+              placeholder="Pull Request Number (e.g., 1)"
+              value={prNumber}
+              onChange={(e) => setPrNumber(e.target.value)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="password"
+              placeholder="GitHub Personal Access Token"
+              value={githubToken}
+              onChange={(e) => setGithubToken(e.target.value)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <input
+              type="password"
+              placeholder="LLM API Key (e.g., xAI or OpenAI)"
+              value={llmApiKey}
+              onChange={(e) => setLlmApiKey(e.target.value)}
+              className="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              onClick={handleReview}
+              disabled={loading}
+              className={`w-full p-2 text-white rounded ${
+                loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'
+              }`}
+            >
+              {loading ? 'Reviewing...' : 'Review Code'}
+            </button>
+          </div>
+          {error && <p className="mt-4 text-red-600">{error}</p>}
+          {review && (
+            <div className="mt-6 p-4 bg-gray-50 rounded border">
+              <h2 className="text-xl font-semibold mb-2">Review Results</h2>
+              <pre className="whitespace-pre-wrap">{review}</pre>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
